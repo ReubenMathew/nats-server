@@ -1174,3 +1174,169 @@ func BenchmarkJetStreamKV(b *testing.B) {
 		)
 	}
 }
+
+func BenchmarkJetStreamObjStore(b *testing.B) {
+	const (
+		verbose            = false
+		objStoreNamePrefix = "B_"
+		keyPrefix          = "K_"
+		seed               = 12345
+		initKeys           = true
+
+		// read/write ratios
+		ReadOnly  = 1.0
+		WriteOnly = 0.0
+	)
+
+	// benchmark options matrix
+	benchmarkOptions := struct {
+		replicaAndClusterSize []int
+		numKeys               []int
+		objectSizeRange       [][]int
+		rwRatio               []float64
+		storageType           []nats.StorageType
+	}{
+		[]int{1, 3},             // 1 replica, 3 replicas
+		[]int{10, 1000, 100000}, // 10 keys, 1K keys, 10K keys
+		[][]int{
+			{1024, 1024},     // 1KB byte objects
+			{102400, 102400}, // 1MB byte objects
+			{1024, 102400},   // 1KB - 1MB byte objects
+		},
+		[]float64{ReadOnly, WriteOnly, 0.8},                      // readOnly, writeOnly, 80% read
+		[]nats.StorageType{nats.MemoryStorage, nats.FileStorage}, // memory retention, file retention
+	}
+
+	// run benchmarks using options matrix
+	for _, clusterSize := range benchmarkOptions.replicaAndClusterSize {
+		replicas := clusterSize
+		for _, numKeys := range benchmarkOptions.numKeys {
+			for _, objectSizeRange := range benchmarkOptions.objectSizeRange {
+				minObjSize, maxObjSize := objectSizeRange[0], objectSizeRange[1]
+				for _, rwRatio := range benchmarkOptions.rwRatio {
+					var rwRatioType string
+					switch rwRatio {
+					case 1.0:
+						rwRatioType = "readOnly"
+					case 0.0:
+						rwRatioType = "writeOnly"
+					default:
+						rwRatioType = fmt.Sprintf("rwRatio=%0.1f", rwRatio)
+					}
+					for _, storageType := range benchmarkOptions.storageType {
+						bName := fmt.Sprintf(
+							"N=%d,R=%d,K=%d,storageType=%s,minObjSize=%db,maxObjSize=%db,workload=%s",
+							clusterSize,
+							replicas,
+							numKeys,
+							storageType.String(),
+							minObjSize,
+							maxObjSize,
+							rwRatioType,
+						)
+						b.Run(
+							bName,
+							func(b *testing.B) {
+								rng := rand.New(rand.NewSource(int64(seed)))
+
+								if verbose {
+									b.Logf("Running %s workload %s with %d messages", bName, bName, b.N)
+								}
+
+								if verbose {
+									b.Logf("Setting up %d nodes", replicas)
+								}
+								var connectURL string
+								if clusterSize == 1 {
+									s := RunBasicJetStreamServer(b)
+									defer s.Shutdown()
+									connectURL = s.ClientURL()
+								} else {
+									cl := createJetStreamClusterExplicit(b, "BENCH_OBJ_STORE", clusterSize)
+									defer cl.shutdown()
+									cl.waitOnClusterReadyWithNumPeers(replicas)
+									cl.waitOnLeader()
+									// connect to leader and not replicas
+									connectURL = cl.leader().ClientURL()
+								}
+								nc, js := jsClientConnectURL(b, connectURL)
+								defer nc.Close()
+
+								// Initialize object store
+								objStoreName := fmt.Sprintf("%sTEST", objStoreNamePrefix)
+								if verbose {
+									b.Logf("Creating ObjectStore %s with R=%d", objStoreName, replicas)
+								}
+								objStoreConfig := &nats.ObjectStoreConfig{
+									Bucket:   objStoreName,
+									Replicas: replicas,
+									Storage:  storageType,
+								}
+								objStore, err := js.CreateObjectStore(objStoreConfig)
+								if err != nil {
+									b.Fatalf("Error creating ObjectStore: %v", err)
+								}
+
+								// Initialize keys
+								if initKeys {
+									for n := 0; n < numKeys; n++ {
+										key := fmt.Sprintf("%s_%d", keyPrefix, n)
+										dataSz := rng.Intn(maxObjSize-minObjSize+1) + minObjSize
+										value := make([]byte, dataSz)
+										rng.Read(value)
+										_, err := objStore.PutBytes(key, value)
+										if err != nil {
+											b.Fatalf("Failed to initialize %s/%s: %v", objStoreName, key, err)
+										}
+									}
+								}
+
+								var (
+									errors float64
+									reads  float64
+									writes float64
+								)
+
+								// Each op is conducting a PUT/GET of avg(minBytes, maxBytes)
+								b.SetBytes(int64((minObjSize + maxObjSize) / 2))
+								b.ResetTimer()
+
+								for i := 1; i <= b.N; i++ {
+									key := fmt.Sprintf("%s_%d", keyPrefix, rng.Intn(numKeys))
+									var err error
+
+									rwOp := rng.Float64()
+									switch {
+									case rwOp <= rwRatio:
+										_, err = objStore.GetBytes(key)
+										reads++
+									case rwOp > rwRatio:
+										// put data; minBytes < data < maxBytes
+										dataSz := rng.Intn(maxObjSize-minObjSize+1) + minObjSize
+										data := make([]byte, dataSz)
+										rng.Read(data)
+										_, err = objStore.PutBytes(key, data)
+										writes++
+									}
+									if err != nil {
+										errors++
+										continue
+									}
+
+									if verbose && i%1000 == 0 {
+										b.Logf("Completed %d/%d Put ops", i, b.N)
+									}
+								}
+
+								b.ReportMetric(float64(errors)*100/float64(b.N), "%error")
+								b.ReportMetric(reads, "reads")
+								b.ReportMetric(writes, "writes")
+
+							},
+						)
+					}
+				}
+			}
+		}
+	}
+}
