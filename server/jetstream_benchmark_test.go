@@ -1196,8 +1196,8 @@ func BenchmarkJetStreamObjStore(b *testing.B) {
 		rwRatio               []float64
 		storageType           []nats.StorageType
 	}{
-		[]int{1, 3},             // 1 replica, 3 replicas
-		[]int{10, 1000, 100000}, // 10 keys, 1K keys, 10K keys
+		[]int{1, 3},            // 1 replica, 3 replicas
+		[]int{10, 1000, 10000}, // 10 keys, 1K keys, 10K keys
 		[][]int{
 			{1024, 1024},     // 1KB byte objects
 			{102400, 102400}, // 1MB byte objects
@@ -1246,13 +1246,16 @@ func BenchmarkJetStreamObjStore(b *testing.B) {
 								if verbose {
 									b.Logf("Setting up %d nodes", replicas)
 								}
-								var connectURL string
+								var (
+									connectURL string
+									cl         *cluster
+								)
 								if clusterSize == 1 {
 									s := RunBasicJetStreamServer(b)
 									defer s.Shutdown()
 									connectURL = s.ClientURL()
 								} else {
-									cl := createJetStreamClusterExplicit(b, "BENCH_OBJ_STORE", clusterSize)
+									cl = createJetStreamClusterExplicit(b, "BENCH_OBJ_STORE", clusterSize)
 									defer cl.shutdown()
 									cl.waitOnClusterReadyWithNumPeers(replicas)
 									cl.waitOnLeader()
@@ -1275,6 +1278,15 @@ func BenchmarkJetStreamObjStore(b *testing.B) {
 								objStore, err := js.CreateObjectStore(objStoreConfig)
 								if err != nil {
 									b.Fatalf("Error creating ObjectStore: %v", err)
+								}
+
+								// if cluster_size > 1, connect to stream leader
+								if cl != nil {
+									nc.Close()
+									connectURL = cl.streamLeader("$G", fmt.Sprintf("OBJ_%s", objStoreName)).ClientURL()
+									nc, js := jsClientConnectURL(b, connectURL)
+									defer nc.Close()
+									objStore, err = js.ObjectStore(objStoreName)
 								}
 
 								// Initialize keys
