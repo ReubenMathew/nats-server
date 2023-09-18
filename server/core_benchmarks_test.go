@@ -249,3 +249,134 @@ func BenchmarkCoreTLSFanOut(b *testing.B) {
 		)
 	}
 }
+
+func BenchmarkCoreTLSFanIn(b *testing.B) {
+	const (
+		subject            = "test-subject"
+		configsBasePath    = "./configs/tls"
+		maxPendingMessages = 25
+		maxPendingBytes    = 15 * 1024 * 1024 // 15MiB
+	)
+
+	keyTypeCases := []string{
+		"none",
+		"ed25519",
+		"rsa-1024",
+		"rsa-2048",
+		"rsa-4096",
+	}
+	messageSizeCases := []int64{
+		512 * 1024, // 512Kib
+	}
+	numPubsCases := []int{
+		5,
+	}
+
+	// Custom error handler that ignores ErrSlowConsumer.
+	// Lots of them are expected in this benchmark which indiscriminately publishes at a rate higher
+	// than what the server can fan-out to subscribers.
+	ignoreSlowConsumerErrorHandler := func(conn *nats.Conn, s *nats.Subscription, err error) {
+		if errors.Is(err, nats.ErrSlowConsumer) {
+			// Swallow this error
+		} else {
+			_, _ = fmt.Fprintf(os.Stderr, "Warning: %s\n", err)
+		}
+	}
+
+	for _, keyType := range keyTypeCases {
+		b.Run(
+			fmt.Sprintf("keyType=%s", keyType),
+			func(b *testing.B) {
+				for _, messageSize := range messageSizeCases {
+					b.Run(
+						fmt.Sprintf("msgSz=%db", messageSize),
+						func(b *testing.B) {
+							for _, numPubs := range numPubsCases {
+								b.Run(
+									fmt.Sprintf("subs=%d", numPubs),
+									func(b *testing.B) {
+
+										// Start server
+										configPath := fmt.Sprintf("%s/tls-%s.conf", configsBasePath, keyType)
+										server, _ := RunServerWithConfig(configPath)
+										defer server.Shutdown()
+
+										opts := []nats.Option{
+											nats.MaxReconnects(-1),
+											nats.ReconnectWait(0),
+											nats.ErrorHandler(ignoreSlowConsumerErrorHandler),
+										}
+
+										if keyType != "none" {
+											opts = append(opts, nats.Secure(&tls.Config{
+												InsecureSkipVerify: true,
+											}))
+										}
+
+										// get connection url
+										clientUrl := server.ClientURL()
+
+										// create subscriber
+										ncSub, err := nats.Connect(clientUrl, opts...)
+										if err != nil {
+											b.Fatal(err)
+										}
+										defer ncSub.Close()
+										// TODO: explicit ACK?
+										sub, err := ncSub.Subscribe(subject, func(msg *nats.Msg) {})
+										sub.SetPendingLimits(maxPendingMessages, maxPendingBytes)
+
+										// publish error count
+										var errCount = 0
+										// don't start publishing until all go routines are ready
+										publishersReady := make(chan struct{})
+										// random bytes as payload
+										messageData := make([]byte, messageSize)
+										rand.Read(messageData)
+
+										// wait group to block until all messages are published
+										var wg sync.WaitGroup
+
+										// create publisher connections
+										for i := 0; i < numPubs; i++ {
+											ncPub, err := nats.Connect(clientUrl, opts...)
+											if err != nil {
+												b.Fatal(err)
+											}
+											defer ncPub.Close()
+											wg.Add(1)
+											// publish b.N messages
+											go func(id int) {
+												// this publisher is ready to publish, wait until all publishers are ready
+												<-publishersReady
+												for j := 0; j < b.N; j++ {
+													ncPub.Publish(subject, messageData)
+													if err != nil {
+														// TODO: data race?
+														errCount++
+													}
+												}
+												// finished publishing
+												wg.Done()
+											}(i)
+										}
+
+										// set bytes
+										b.SetBytes(messageSize)
+										// start clock
+										b.ResetTimer()
+										// start publishing
+										close(publishersReady)
+										// wait till subscriber has received all expected messages
+										wg.Wait()
+
+										b.StopTimer()
+
+										b.ReportMetric(float64(errCount), "errors")
+									})
+							}
+						})
+				}
+			})
+	}
+}
