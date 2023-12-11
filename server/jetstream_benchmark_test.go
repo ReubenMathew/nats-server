@@ -1038,9 +1038,18 @@ func BenchmarkJetStreamKV(b *testing.B) {
 							}
 
 							// Setup server or cluster
-							cl, _, shutdown, nc, js := startJSClusterAndConnect(b, bc.clusterSize)
-							defer shutdown()
+
+							serverUrls := "nats://ec2-3-144-2-96.us-east-2.compute.amazonaws.com:4222,nats://ec2-3-12-149-40.us-east-2.compute.amazonaws.com:4222,nats://ec2-3-140-195-236.us-east-2.compute.amazonaws.com:4222"
+
+							nc, err := nats.Connect(serverUrls)
+							if err != nil {
+								b.Fatalf("Failed to connect: %v", err)
+							}
 							defer nc.Close()
+							js, err := nc.JetStream()
+							if err != nil {
+								b.Fatalf("Unexpected error getting JetStream context: %v", err)
+							}
 
 							// Create bucket
 							if verbose {
@@ -1060,18 +1069,10 @@ func BenchmarkJetStreamKV(b *testing.B) {
 							value := make([]byte, bc.valueSize)
 							for _, key := range keys {
 								rng.Read(value)
-								_, err := kv.Create(key, value)
+								_, err = kv.Create(key, value)
 								if err != nil {
 									b.Fatalf("Failed to initialize %s/%s: %v", kvName, key, err)
 								}
-							}
-
-							// If replicated resource, connect to stream leader for lower variability
-							if bc.replicas > 1 {
-								nc.Close()
-								connectURL := cl.streamLeader("$G", fmt.Sprintf("KV_%s", kvName)).ClientURL()
-								nc, js = jsClientConnectURL(b, connectURL)
-								defer nc.Close()
 							}
 
 							kv, err = js.KeyValue(kv.Bucket())
@@ -1103,6 +1104,11 @@ func BenchmarkJetStreamKV(b *testing.B) {
 							b.StopTimer()
 
 							b.ReportMetric(float64(errors)*100/float64(b.N), "%error")
+
+							if err = js.DeleteKeyValue(kvName); err != nil {
+								b.Fatalf("Error deleting KV: %v", err)
+							}
+
 						},
 					)
 				}
