@@ -1039,7 +1039,7 @@ func BenchmarkJetStreamKV(b *testing.B) {
 
 							// Setup server or cluster
 
-							serverUrls := "nats://ec2-3-144-2-96.us-east-2.compute.amazonaws.com:4222,nats://ec2-3-12-149-40.us-east-2.compute.amazonaws.com:4222,nats://ec2-3-140-195-236.us-east-2.compute.amazonaws.com:4222"
+							serverUrls := "nats://ec2-3-144-229-188.us-east-2.compute.amazonaws.com:4222,nats://ec2-18-116-165-159.us-east-2.compute.amazonaws.com:4222,nats://ec2-3-15-23-159.us-east-2.compute.amazonaws.com:4222"
 
 							nc, err := nats.Connect(serverUrls)
 							if err != nil {
