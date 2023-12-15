@@ -118,7 +118,7 @@ func BenchmarkCoreTLSFanOut(b *testing.B) {
 	// Custom error handler that ignores ErrSlowConsumer.
 	// Lots of them are expected in this benchmark which indiscriminately publishes at a rate higher
 	// than what the server can relay to subscribers.
-	ignoreSlowConsumerErrorHandler := func(conn *nats.Conn, s *nats.Subscription, err error) {
+	ignoreSlowConsumerErrorHandler := func(_ *nats.Conn, _ *nats.Subscription, err error) {
 		if errors.Is(err, nats.ErrSlowConsumer) {
 			// Swallow this error
 		} else {
@@ -175,7 +175,7 @@ func BenchmarkCoreTLSFanOut(b *testing.B) {
 												b.Fatal(err)
 											}
 											defer ncSub.Close()
-											sub, err := ncSub.Subscribe(subject, func(msg *nats.Msg) {
+											sub, err := ncSub.Subscribe(subject, func(_ *nats.Msg) {
 												counters[subIndex] += 1
 												if counters[subIndex] == b.N {
 													wg.Done()
@@ -405,8 +405,7 @@ func BenchmarkCoreFanIn(b *testing.B) {
 	}
 
 	messageSizeCases := []int64{
-		100,        // 100B
-		1024,       // 1KiB
+		10,         // 10B
 		10240,      // 10KiB
 		512 * 1024, // 512KiB
 	}
@@ -436,18 +435,13 @@ func BenchmarkCoreFanIn(b *testing.B) {
 						fmt.Sprintf("pubs=%d", numPubs),
 						func(b *testing.B) {
 
-							// start server
-							defaultOpts := DefaultOptions()
-							server := RunServer(defaultOpts)
-							defer server.Shutdown()
-
 							opts := []nats.Option{
 								nats.MaxReconnects(-1),
 								nats.ReconnectWait(0),
 								nats.ErrorHandler(ignoreSlowConsumerErrorHandler),
 							}
 
-							clientUrl := server.ClientURL()
+							clientUrl := "nats://ec2-18-226-226-82.us-east-2.compute.amazonaws.com:4222,nats://ec2-18-224-38-254.us-east-2.compute.amazonaws.com:4222,nats://ec2-18-118-7-226.us-east-2.compute.amazonaws.com:4222"
 
 							// start subscriber
 							ncSub, err := nats.Connect(clientUrl, opts...)
