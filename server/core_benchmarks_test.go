@@ -411,6 +411,7 @@ func BenchmarkCoreFanIn(b *testing.B) {
 	numPubsCases := []int{
 		3,
 		5,
+		10,
 	}
 
 	// Custom error handler that ignores ErrSlowConsumer.
