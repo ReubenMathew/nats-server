@@ -406,13 +406,11 @@ func BenchmarkCoreFanIn(b *testing.B) {
 
 	messageSizeCases := []int64{
 		10,         // 10B
-		10240,      // 10KiB
 		512 * 1024, // 512KiB
 	}
 	numPubsCases := []int{
 		3,
 		5,
-		10,
 	}
 
 	// Custom error handler that ignores ErrSlowConsumer.
