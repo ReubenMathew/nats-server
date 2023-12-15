@@ -440,7 +440,7 @@ func BenchmarkCoreFanIn(b *testing.B) {
 								nats.ErrorHandler(ignoreSlowConsumerErrorHandler),
 							}
 
-							clientUrl := "nats://ec2-18-226-226-82.us-east-2.compute.amazonaws.com:4222,nats://ec2-18-224-38-254.us-east-2.compute.amazonaws.com:4222,nats://ec2-18-118-7-226.us-east-2.compute.amazonaws.com:4222"
+							clientUrl := "nats://ec2-18-191-159-218.us-east-2.compute.amazonaws.com:4222,nats://ec2-3-142-221-42.us-east-2.compute.amazonaws.com:4222,nats://ec2-18-216-112-61.us-east-2.compute.amazonaws.com:4222"
 
 							// start subscriber
 							ncSub, err := nats.Connect(clientUrl, opts...)
