@@ -467,6 +467,11 @@ func BenchmarkCoreFanIn(b *testing.B) {
 									b.Fatal(err)
 								}
 
+								if pubIdx >= len(publishers) {
+									// unknown publisher id
+									return
+								}
+
 								// message successfully received from publisher
 								publishers[pubIdx].publishCounter += 1
 
