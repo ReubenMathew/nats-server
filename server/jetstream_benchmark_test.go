@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"math/rand"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1292,6 +1293,202 @@ func BenchmarkJetStreamObjStore(b *testing.B) {
 				}
 			},
 		)
+	}
+}
+
+func BenchmarkJetStreamFanIn(b *testing.B) {
+	const (
+		subject     = "test-subject"
+		streamName  = "test-stream"
+		numPubs     = 5
+		clusterSize = 3
+		replicas    = 3
+	)
+
+	type BenchPublisher struct {
+		// nats connection for this publisher
+		conn *nats.Conn
+		// jetstream context
+		js nats.JetStreamContext
+		// number of publishing errors encountered
+		publishErrors int
+		// number of messages published
+		publishCounter int
+		// quit channel which will terminate publishing
+		quitCh chan bool
+	}
+
+	messageSizeCases := []int64{
+		100,        // 100B
+		1024,       // 1KiB
+		10240,      // 10KiB
+		512 * 1024, // 512KiB
+	}
+	numPubsCases := []int{
+		3,
+		5,
+		10,
+	}
+
+	for _, messageSize := range messageSizeCases {
+		b.Run(
+			fmt.Sprintf("msgSz=%db", messageSize),
+			func(b *testing.B) {
+				for _, numPubs := range numPubsCases {
+					b.Run(
+						fmt.Sprintf("pubs=%d", numPubs),
+						func(b *testing.B) {
+
+							cl, ls, shutdown, nc, js := startJSClusterAndConnect(b, clusterSize)
+							defer shutdown()
+							defer nc.Close()
+
+							clientUrl := ls.ClientURL()
+
+							_, err := js.AddStream(&nats.StreamConfig{
+								Name:     streamName,
+								Subjects: []string{subject},
+								Replicas: replicas,
+							})
+							if err != nil {
+								b.Fatal(err)
+							}
+							defer js.DeleteStream(streamName)
+
+							// If replicated resource, connect to stream leader for lower variability
+							if replicas > 1 {
+								nc.Close()
+								clientUrl = cl.streamLeader("$G", streamName).ClientURL()
+								nc, _ = jsClientConnectURL(b, clientUrl)
+								defer nc.Close()
+							}
+
+							publishers := make([]BenchPublisher, numPubs)
+							for i := range publishers {
+								publishers[i].quitCh = make(chan bool, 1)
+							}
+
+							// total number of publishers that have published b.N to the stream successfully
+							var completedPublishersCount atomic.Uint64
+
+							// wait group blocks main thread until publish workload is completed, it is decremented after stream receives b.N messages from all publishers
+							var benchCompleteWg sync.WaitGroup
+							benchCompleteWg.Add(1)
+
+							publisherComplete := func() {
+								completedPublishersCount.Add(1)
+								// every publisher has successfully sent b.N messages to the stream
+								if int(completedPublishersCount.Load()) == numPubs {
+									benchCompleteWg.Done()
+								}
+							}
+
+							// random bytes as payload
+							messageData := make([]byte, messageSize)
+							if _, err := rand.Read(messageData); err != nil {
+								b.Fatal(err)
+							}
+
+							var publishersReadyWg sync.WaitGroup
+							// waits for all publishers sub-routines and for main thread to be ready
+							publishersReadyWg.Add(numPubs + 1)
+
+							// wait group to ensure all publishers have been torn down
+							var finishedPublishersWg sync.WaitGroup
+							finishedPublishersWg.Add(numPubs)
+
+							// create N publishers
+							for i := range publishers {
+								// create publisher connection and attach to bench publisher object
+								ncPub, err := nats.Connect(clientUrl)
+								if err != nil {
+									b.Fatal(err)
+								}
+								publishers[i].conn = ncPub
+
+								jsPub, err := ncPub.JetStream()
+								if err != nil {
+									b.Fatal(err)
+								}
+								publishers[i].js = jsPub
+
+								// publisher successfully initialized
+								publishersReadyWg.Done()
+
+								defer ncPub.Close()
+							}
+
+							for i := range publishers {
+								go func(pubId int) {
+									// signal that this publisher has been torn down
+									defer finishedPublishersWg.Done()
+
+									// wait till all other publishers are ready to start workload
+									publishersReadyWg.Wait()
+
+									// publish until quitCh is closed
+									for {
+										select {
+										case <-publishers[pubId].quitCh:
+											return
+										default:
+											// continue publishing
+										}
+										_, err := publishers[pubId].js.Publish(subject, messageData)
+										if err != nil {
+											publishers[pubId].publishErrors += 1
+
+										}
+										// received a PubAck
+										publishers[pubId].publishCounter += 1
+
+										// check if this publisher has published enough messages
+										if publishers[pubId].publishCounter == b.N {
+											publisherComplete()
+										}
+									}
+								}(i)
+							}
+
+							// set bytes per operation
+							b.SetBytes(messageSize)
+							// main thread is ready
+							publishersReadyWg.Done()
+							// wait till publishers are ready
+							publishersReadyWg.Wait()
+
+							// start the clock
+							b.ResetTimer()
+							// wait till termination cond reached
+							benchCompleteWg.Wait()
+							// stop the clock
+							b.StopTimer()
+
+							// send quit signal to all publishers
+							for i := range publishers {
+								publishers[i].quitCh <- true
+							}
+							// wait for all publishers to shutdown
+							finishedPublishersWg.Wait()
+
+							// sum errors from all publishers
+							totalErrors := 0
+							for _, publisher := range publishers {
+								totalErrors += publisher.publishErrors
+							}
+							// sum total messages sent from all publishers
+							totalMessages := 0
+							for _, publisher := range publishers {
+								totalMessages += publisher.publishCounter
+							}
+							errorRate := 100 * float64(totalErrors) / float64(totalMessages)
+
+							// report error rate
+							b.ReportMetric(errorRate, "%error")
+
+						})
+				}
+			})
 	}
 }
 
