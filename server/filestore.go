@@ -5928,7 +5928,8 @@ func (mb *msgBlock) loadBlock(buf []byte) ([]byte, error) {
 	}
 	if f == nil {
 		var err error
-		f, err = mb.openBlock()
+		//f, err = mb.openBlock()
+		f, err = os.Open(mb.mfn)
 		if err != nil {
 			if os.IsNotExist(err) {
 				err = errNoBlkData
