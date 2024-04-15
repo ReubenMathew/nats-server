@@ -424,6 +424,8 @@ func BenchmarkJetStreamConsumeWithFilters(b *testing.B) {
 	}{
 		{1, 1, nats.MemoryStorage},
 		{3, 3, nats.MemoryStorage},
+		{1, 1, nats.FileStorage},
+		{3, 3, nats.FileStorage},
 	}
 
 	benchmarksCases := []struct {
@@ -431,11 +433,11 @@ func BenchmarkJetStreamConsumeWithFilters(b *testing.B) {
 		subjectsPerDomain   int // Number of distinct subjects within each domain
 		filters             int // Number of filters (<prefix>.<domain>.>) per consumer
 		concurrentConsumers int // Number of consumer running
-
 	}{
 		{100, 10, 5, 12},
 		{1000, 10, 25, 12},
 		{10_000, 10, 50, 12},
+		{100_000, 10, 50, 12},
 	}
 
 	for _, cs := range clusterSizeCases {
