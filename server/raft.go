@@ -2626,6 +2626,7 @@ func (n *raft) sendSnapshotToFollower(subject string) (uint64, error) {
 		n.stepdownLocked(noLeader)
 		// We need to reset our state here as well.
 		n.resetWAL()
+		n.debug("resetting wal since we were unable to loadLastSnapshot while sending snapshot to follower: %s", err)
 		assert.Unreachable(
 			"Failed to load last snapshot when sending snapshot to follower",
 			map[string]any{
@@ -2764,6 +2765,7 @@ func (n *raft) applyCommit(index uint64) error {
 				}
 				// Reset and cancel any catchup.
 				n.resetWAL()
+				n.debug("reset wal while applying commits, pending ae not found")
 				assert.Unreachable(
 					"Failed to load append entry from store",
 					map[string]any{
@@ -3331,6 +3333,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 						},
 					)
 					n.resetWAL()
+					n.debug("resetting wal due to that confusing block of conditions")
 				}
 			} else {
 				// If terms mismatched, or we got an error loading, delete that entry and all others past it.
@@ -3355,6 +3358,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 					},
 				)
 				n.truncateWAL(eae.pterm, eae.pindex)
+				n.debug("truncated because of a confusing set of arguments")
 			}
 			// Cancel regardless.
 			n.cancelCatchup()
@@ -3385,6 +3389,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 				// Make sure pterms match and we take on the leader's.
 				// This prevents constant spinning.
 				n.truncateWAL(ae.pterm, ae.pindex)
+				n.debug("truncated wal since ae and n pindex did not match")
 				assert.Unreachable(
 					"Weird unexplainable truncateWAL was called",
 					map[string]any{
@@ -3597,6 +3602,7 @@ func (n *raft) processAppendEntryResponse(ar *appendEntryResponse) {
 		n.warn("Detected another leader with higher term, will stepdown and reset")
 		n.stepdownLocked(noLeader)
 		n.resetWAL()
+		n.debug("reset wal after receiving unsuccessful ae response from a node with a higher term")
 		n.Unlock()
 		arPool.Put(ar)
 	} else if ar.reply != _EMPTY_ {
@@ -3647,6 +3653,7 @@ func (n *raft) storeToWAL(ae *appendEntry) error {
 		}
 		// Reset and cancel any catchup.
 		n.resetWAL()
+		n.debug("reset wal since stored seq doesn't match ae pindex + 1")
 		assert.Unreachable(
 			"WAL stored sequence doesn't match the leader last log index",
 			map[string]any{
